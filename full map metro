@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Metro Interactive Map</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --card: #1e1e1e;
+            --border: #333;
+            --accent: #007aff;
+            --RD: #e21833; --BL: #0076c0; --OR: #f38f1d;
+            --SV: #aadaff; --GR: #00a650; --YL: #ffd200;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg);
+            color: white;
+            margin: 0;
+            overflow: hidden; /* Prevent body scroll when map is active */
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Map Container */
+        #map-container {
+            flex: 1;
+            overflow: auto;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #1a1a1a;
+            cursor: grab;
+        }
+
+        svg {
+            width: 1000px; /* Scale this based on your SVG needs */
+            height: auto;
+            padding: 50px;
+        }
+
+        /* Station Dots */
+        .station-dot {
+            fill: #fff;
+            stroke: #000;
+            stroke-width: 2;
+            cursor: pointer;
+            transition: r 0.2s, fill 0.2s;
+        }
+
+        .station-dot:hover { r: 8; fill: var(--accent); }
+        .station-dot.active { r: 10; fill: var(--accent); stroke: white; }
+
+        /* Lines */
+        .line { fill: none; stroke-width: 10; stroke-linecap: round; }
+        .line.RD { stroke: var(--RD); }
+        .line.GR { stroke: var(--GR); }
+        .line.YL { stroke: var(--YL); }
+
+        /* Slide-up Panel */
+        #details-panel {
+            position: fixed;
+            bottom: -100%; /* Hidden by default */
+            left: 0;
+            right: 0;
+            background: var(--card);
+            height: 50vh;
+            border-top-left-radius: 20px;
+            border-top-right-radius: 20px;
+            box-shadow: 0 -5px 20px rgba(0,0,0,0.5);
+            transition: bottom 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+            z-index: 100;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #details-panel.open { bottom: 0; }
+
+        .handle {
+            width: 40px;
+            height: 5px;
+            background: #444;
+            border-radius: 5px;
+            margin: 0 auto 15px;
+        }
+
+        #panel-content { overflow-y: auto; flex: 1; }
+
+        /* Existing Train Row Styles */
+        .train-row {
+            display: grid;
+            grid-template-columns: 45px 1fr 45px 60px;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .line-pill {
+            width: 30px; height: 20px; border-radius: 4px;
+            text-align: center; font-size: 0.75rem; font-weight: bold; line-height: 20px;
+        }
+        .cars { color: #eee; font-weight: 600; text-align: center; font-size: 0.85rem; }
+        .time { text-align: right; font-weight: bold; color: #4cd964; }
+        .time.imminent { color: #ff3b30; animation: pulse 1s infinite; }
+        
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+</head>
+<body>
+
+    <div id="map-container">
+        <svg viewBox="0 0 400 400">
+            <path class="line RD" d="M 50 100 L 350 100" /> <path class="line GR" d="M 200 50 L 200 350" /> <circle class="station-dot" cx="200" cy="100" r="6" data-code="E06" data-name="Fort Totten" />
+            <circle class="station-dot" cx="100" cy="100" r="6" data-code="B05" data-name="Brookland-CUA" />
+            <circle class="station-dot" cx="200" cy="200" r="6" data-code="F01" data-name="Gallery Place" />
+            <circle class="station-dot" cx="200" cy="300" r="6" data-code="C07" data-name="Pentagon" />
+            
+            <text x="210" y="95" fill="white" font-size="10">Fort Totten</text>
+            <text x="110" y="95" fill="white" font-size="10">Brookland</text>
+        </svg>
+    </div>
+
+    <div id="details-panel">
+        <div class="handle"></div>
+        <h2 id="station-title" style="margin-top:0">Select a Station</h2>
+        <div id="panel-content">
+            <p style="color:#888">Tap a station on the map to see real-time arrivals.</p>
+        </div>
+    </div>
+
+    <script>
+        let autoRefreshInterval = null;
+        let currentStationCode = null;
+
+        const panel = document.getElementById('details-panel');
+        const content = document.getElementById('panel-content');
+        const title = document.getElementById('station-title');
+
+        // 1. Handle Map Clicks
+        document.querySelectorAll('.station-dot').forEach(dot => {
+            dot.addEventListener('click', (e) => {
+                // Highlight dot
+                document.querySelectorAll('.station-dot').forEach(d => d.classList.remove('active'));
+                dot.classList.add('active');
+
+                const code = dot.getAttribute('data-code');
+                const name = dot.getAttribute('data-name');
+                
+                openStation(code, name);
+            });
+        });
+
+        // 2. Fetch and Render Logic
+        async function openStation(code, name) {
+            currentStationCode = code;
+            title.innerText = name;
+            content.innerHTML = '<p>Loading arrivals...</p>';
+            panel.classList.add('open');
+
+            fetchData();
+
+            // Reset refresh timer
+            clearInterval(autoRefreshInterval);
+            autoRefreshInterval = setInterval(fetchData, 20000);
+        }
+
+        async function fetchData() {
+            if (!currentStationCode) return;
+            
+            try {
+                const url = `https://metro-proxy.josborne101.workers.dev?stations=${currentStationCode}`;
+                const response = await fetch(url);
+                const data = await response.json();
+                renderTrains(data.Trains);
+            } catch (err) {
+                content.innerHTML = '<p style="color:red">Error loading data.</p>';
+            }
+        }
+
+        function renderTrains(trains) {
+            if (!trains || trains.length === 0) {
+                content.innerHTML = '<p>No trains currently scheduled.</p>';
+                return;
+            }
+
+            // Sort
+            trains.sort((a, b) => {
+                const convert = (m) => (m === "ARR" || m === "BRD") ? 0 : (parseInt(m) || 999);
+                return convert(a.Min) - convert(b.Min);
+            });
+
+            let html = '';
+            trains.forEach(t => {
+                const isImminent = t.Min === "ARR" || t.Min === "BRD";
+                const displayTime = isImminent ? t.Min : `${t.Min}m`;
+                const carCount = (t.Car && t.Car !== "0") ? t.Car : "";
+
+                html += `
+                <div class="train-row">
+                    <div class="line-pill ${t.Line}">${t.Line}</div>
+                    <div class="dest">${t.DestinationName}</div>
+                    <div class="cars">${carCount}</div>
+                    <div class="time ${isImminent ? 'imminent' : ''}">${displayTime}</div>
+                </div>`;
+            });
+            content.innerHTML = html;
+        }
+
+        // Close panel when clicking map background
+        document.getElementById('map-container').addEventListener('click', (e) => {
+            if (e.target.tagName === 'svg' || e.target.id === 'map-container') {
+                panel.classList.remove('open');
+                document.querySelectorAll('.station-dot').forEach(d => d.classList.remove('active'));
+                clearInterval(autoRefreshInterval);
+            }
+        });
+    </script>
+</body>
+</html>
